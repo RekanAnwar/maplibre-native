@@ -193,7 +193,20 @@ void RenderHeatmapLayer::update(gfx::ShaderRegistry& shaders,
         renderTarget->getTexture()->setSize(size);
     }
 
-    auto* tileLayerGroup = static_cast<TileLayerGroup*>(renderTarget->getLayerGroup(0).get());
+    // DEBUG: Add comprehensive null checks and logging
+    auto layerGroupPtr = renderTarget->getLayerGroup(0);
+    if (!layerGroupPtr) {
+        Log::Error(Event::Render, "HeatmapLayer: renderTarget->getLayerGroup(0) returned null");
+        return;
+    }
+    
+    auto* tileLayerGroup = static_cast<TileLayerGroup*>(layerGroupPtr.get());
+    if (!tileLayerGroup) {
+        Log::Error(Event::Render, "HeatmapLayer: Failed to cast layer group to TileLayerGroup");
+        return;
+    }
+    
+    Log::Info(Event::Render, "HeatmapLayer: Successfully got tileLayerGroup, ID: " + getID());
 
     if (!heatmapShaderGroup) {
         heatmapShaderGroup = shaders.getShaderGroup(HeatmapShaderGroupName);
@@ -253,7 +266,9 @@ void RenderHeatmapLayer::update(gfx::ShaderRegistry& shaders,
             }
             return true;
         };
-#if MLN_RENDER_BACKEND_WEBGPU
+        // Safer pre-scan path: avoid mutating the layer group while iterating its containers.
+        // This mirrors the WebGPU path but is applied unconditionally to prevent iterator invalidation
+        // and container corruption across backends.
         bool anyUpdated = false;
         bool skippedDrawables = false;
         tileLayerGroup->visitDrawables(renderPass, tileID, [&](gfx::Drawable& drawable) {
@@ -265,17 +280,14 @@ void RenderHeatmapLayer::update(gfx::ShaderRegistry& shaders,
         });
 
         if (!anyUpdated && skippedDrawables) {
+            // The existing drawables belong to a different bucket/style; drop them now, then rebuild below.
             removeTile(renderPass, tileID);
         }
 
         if (anyUpdated) {
+            // Existing drawables were updated in-place; move to next tile.
             continue;
         }
-#else
-        if (updateTile(renderPass, tileID, std::move(updateExisting))) {
-            continue;
-        }
-#endif
 
         if (!propertiesAsUniforms) {
             propertiesAsUniforms.emplace();
@@ -362,7 +374,19 @@ void RenderHeatmapLayer::update(gfx::ShaderRegistry& shaders,
         return;
     }
 
+    // DEBUG: Add null check for layerGroup
+    if (!layerGroup) {
+        Log::Error(Event::Render, "HeatmapLayer: layerGroup is null");
+        return;
+    }
+    
     auto* textureLayerGroup = static_cast<LayerGroup*>(layerGroup.get());
+    if (!textureLayerGroup) {
+        Log::Error(Event::Render, "HeatmapLayer: Failed to cast layerGroup to LayerGroup");
+        return;
+    }
+    
+    Log::Info(Event::Render, "HeatmapLayer: Successfully got textureLayerGroup");
     // TODO: Don't rebuild drawables every time
     textureLayerGroup->clearDrawables();
 

@@ -14,6 +14,11 @@ import org.maplibre.android.testapp.styles.TestStyles
 import timber.log.Timber
 import java.net.URI
 import java.net.URISyntaxException
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.style.layers.CannotAddLayerException
+import kotlin.random.Random
+import java.util.Locale
 
 /**
  * Test activity showcasing the heatmap layer api.
@@ -35,10 +40,26 @@ class HeatmapLayerActivity : AppCompatActivity() {
                     maplibreMap.setStyle(
                         Style.Builder()
                             .fromUri(TestStyles.getPredefinedStyleWithFallback("Pastel"))
-                            .withSource(createEarthquakeSource())
-                            .withLayerAbove(createHeatmapLayer(), "country_label")
-                            .withLayerBelow(createCircleLayer(), HEATMAP_LAYER_ID)
-                    )
+                    ) { style ->
+                        // Add source and layers after style load; avoid referencing non-existent IDs
+                        style.addSource(createEarthquakeSource())
+                        style.addLayer(createHeatmapLayer())
+                        try {
+                            style.addLayerAbove(createCircleLayer(), HEATMAP_LAYER_ID)
+                        } catch (e: CannotAddLayerException) {
+                            // Fallback if anchor is missing
+                            style.addLayer(createCircleLayer())
+                        }
+
+                        // Add a second, custom heatmap with clearly different styling at a known location
+                        style.addSource(createTestHeatSource())
+                        style.addLayerAbove(createCustomHeatmapLayer(), HEATMAP_LAYER_ID)
+
+                        // Center camera over the custom heat area (Sulaimaniyah, Kurdistan Region, Iraq)
+                        maplibreMap.animateCamera(
+                            CameraUpdateFactory.newLatLngZoom(LatLng(CUSTOM_HEAT_LAT, CUSTOM_HEAT_LON), 13.0)
+                        )
+                    }
                 } catch (exception: URISyntaxException) {
                     Timber.e(exception)
                 }
@@ -154,6 +175,159 @@ class HeatmapLayerActivity : AppCompatActivity() {
         return circleLayer
     }
 
+    private fun createTestHeatSource(): GeoJsonSource {
+        // Generate a wide, non-clustered FeatureCollection around Sulaimaniyah with varying weights (property "w")
+        val json = generateHeatGeoJson(
+            centerLat = CUSTOM_HEAT_LAT,
+            centerLon = CUSTOM_HEAT_LON,
+            pointCount = 6000,   // denser data
+            latJitter = 0.05,    // ~5.5 km N/S
+            lonJitter = 0.05,    // ~4.5 km E/W at this latitude
+            minSpacingDeg = 0.0015 // ~150 m minimum spacing to avoid deep clustering
+        )
+        return GeoJsonSource(TEST_HEAT_SOURCE_ID, json)
+    }
+
+    private fun generateHeatGeoJson(
+        centerLat: Double,
+        centerLon: Double,
+        pointCount: Int,
+        latJitter: Double,
+        lonJitter: Double,
+        minSpacingDeg: Double
+    ): String {
+        val rnd = Random(42)
+
+        // Simple Poisson-disk-like sampling using grid binning to enforce minimum spacing
+        data class Pt(val lat: Double, val lon: Double, val w: Double)
+        val cellSize = minSpacingDeg / 1.4142
+        val grid = HashMap<Long, MutableList<Pt>>()
+        val accepted = ArrayList<Pt>(pointCount)
+
+        fun gridKey(lat: Double, lon: Double): Long {
+            val gx = kotlin.math.floor((lon - (centerLon - lonJitter)) / cellSize).toLong()
+            val gy = kotlin.math.floor((lat - (centerLat - latJitter)) / cellSize).toLong()
+            return (gx shl 32) or (gy and 0xffffffffL)
+        }
+
+        fun neighbors(lat: Double, lon: Double): Sequence<Pt> = sequence {
+            val gx = kotlin.math.floor((lon - (centerLon - lonJitter)) / cellSize).toLong()
+            val gy = kotlin.math.floor((lat - (centerLat - latJitter)) / cellSize).toLong()
+            for (dx in -2..2) for (dy in -2..2) {
+                val key = ((gx + dx) shl 32) or ((gy + dy) and 0xffffffffL)
+                grid[key]?.let { list ->
+                    for (p in list) yield(p)
+                }
+            }
+        }
+
+        var attempts = 0
+        val maxAttempts = pointCount * 20
+        while (accepted.size < pointCount && attempts < maxAttempts) {
+            attempts++
+            val lat = centerLat + (rnd.nextDouble() * 2.0 - 1.0) * latJitter
+            val lon = centerLon + (rnd.nextDouble() * 2.0 - 1.0) * lonJitter
+
+            // enforce bounds
+            if (lat < centerLat - latJitter || lat > centerLat + latJitter) continue
+            if (lon < centerLon - lonJitter || lon > centerLon + lonJitter) continue
+
+            var ok = true
+            for (n in neighbors(lat, lon)) {
+                val dlat = lat - n.lat
+                val dlon = lon - n.lon
+                val dist = kotlin.math.sqrt(dlat * dlat + dlon * dlon)
+                if (dist < minSpacingDeg) { ok = false; break }
+            }
+            if (!ok) continue
+
+            // Weight: more random, with a slight center bias
+            val dx = (lon - centerLon) / lonJitter
+            val dy = (lat - centerLat) / latJitter
+            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+            var w = 1.0 - (dist / 1.8)
+            if (w < 0.0) w = 0.0
+            w = (w * 0.6) + rnd.nextDouble() * 0.4
+            if (w > 1.0) w = 1.0
+
+            val pt = Pt(lat, lon, w)
+            accepted.add(pt)
+            val key = gridKey(lat, lon)
+            grid.getOrPut(key) { mutableListOf() }.add(pt)
+        }
+
+        val sb = StringBuilder()
+        sb.append('{')
+        sb.append("\"type\":\"FeatureCollection\",\"features\":[")
+        for (i in accepted.indices) {
+            val p = accepted[i]
+            if (i > 0) sb.append(',')
+            sb.append('{')
+            sb.append("\"type\":\"Feature\",\"properties\":{\"w\":")
+            sb.append(String.format(Locale.US, "%.3f", p.w))
+            sb.append("},\"geometry\":{\"type\":\"Point\",\"coordinates\":[")
+            sb.append(String.format(Locale.US, "%.6f", p.lon))
+            sb.append(',')
+            sb.append(String.format(Locale.US, "%.6f", p.lat))
+            sb.append("]}}")
+        }
+        sb.append("]}")
+        return sb.toString()
+    }
+
+    private fun createCustomHeatmapLayer(): HeatmapLayer {
+        val layer = HeatmapLayer(TEST_HEAT_LAYER_ID, TEST_HEAT_SOURCE_ID)
+        layer.maxZoom = 22f
+        layer.setProperties(
+            // Bold, distinct color ramp
+            PropertyFactory.heatmapColor(
+                Expression.interpolate(
+                    Expression.linear(), Expression.heatmapDensity(),
+                    Expression.literal(0.00), Expression.rgba(0, 0, 0, 0),
+                    Expression.literal(0.10), Expression.rgba(0, 255, 255, 0.6),   // cyan
+                    Expression.literal(0.40), Expression.rgba(0, 128, 0, 0.8),     // green
+                    Expression.literal(0.70), Expression.rgba(255, 165, 0, 0.9),   // orange
+                    Expression.literal(1.00), Expression.rgba(255, 0, 0, 1.0)      // red
+                )
+            ),
+            // Weight from custom property "w"
+            PropertyFactory.heatmapWeight(
+                Expression.interpolate(
+                    Expression.linear(),
+                    Expression.get("w"),
+                    Expression.stop(0.0, 0.0),
+                    Expression.stop(1.0, 1.0)
+                )
+            ),
+            // Stronger intensity overall
+            PropertyFactory.heatmapIntensity(
+                Expression.interpolate(
+                    Expression.linear(), Expression.zoom(),
+                    Expression.stop(0, 1.5),
+                    Expression.stop(15, 4.0)
+                )
+            ),
+            // Larger radius to exaggerate effect
+            PropertyFactory.heatmapRadius(
+                Expression.interpolate(
+                    Expression.linear(), Expression.zoom(),
+                    Expression.stop(0, 6),
+                    Expression.stop(13, 40),
+                    Expression.stop(22, 60)
+                )
+            ),
+            // Keep visible at high zoom
+            PropertyFactory.heatmapOpacity(
+                Expression.interpolate(
+                    Expression.linear(), Expression.zoom(),
+                    Expression.stop(10, 1.0),
+                    Expression.stop(22, 0.7)
+                )
+            )
+        )
+        return layer
+    }
+
     override fun onStart() {
         super.onStart()
         mapView.onStart()
@@ -197,6 +371,12 @@ class HeatmapLayerActivity : AppCompatActivity() {
         private const val HEATMAP_LAYER_ID = "earthquakes-heat"
         private const val HEATMAP_LAYER_SOURCE = "earthquakes"
         private const val CIRCLE_LAYER_ID = "earthquakes-circle"
+
+        // Custom heatmap IDs and location (Sulaimaniyah, Kurdistan Region, Iraq)
+        private const val TEST_HEAT_SOURCE_ID = "test-heat-src"
+        private const val TEST_HEAT_LAYER_ID = "test-heat-layer"
+        private const val CUSTOM_HEAT_LAT = 35.5610
+        private const val CUSTOM_HEAT_LON = 45.4330
     }
     // # --8<-- [end:constants]
 }
