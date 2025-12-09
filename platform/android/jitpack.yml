@@ -1,5 +1,0 @@
-jdk:
-  - openjdk17
-
-install:
-  - cd platform/android && ./gradlew -Pmaplibre.abis=arm64-v8a :MapLibreAndroid:assembleOpenglRelease
