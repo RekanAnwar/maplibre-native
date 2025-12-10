@@ -3,7 +3,13 @@ jdk:
 
 before_install:
   - git submodule update --init --recursive --depth 1
+  - wget -q https://github.com/Kitware/CMake/releases/download/v3.30.3/cmake-3.30.3-linux-x86_64.tar.gz
+  - tar -xzf cmake-3.30.3-linux-x86_64.tar.gz
+  - export PATH="$PWD/cmake-3.30.3-linux-x86_64/bin:$PATH"
+  - mkdir -p /opt/android-sdk-linux/cmake/3.30.3
+  - cp -r cmake-3.30.3-linux-x86_64/* /opt/android-sdk-linux/cmake/3.30.3/
 
 install:
-  - cd platform/android && ./gradlew -Pmaplibre.abis=arm64-v8a :MapLibreAndroid:assembleOpenglRelease
+  - export PATH="/opt/android-sdk-linux/cmake/3.30.3/bin:$PATH"
+  - cd platform/android && ./gradlew -Pmaplibre.abis=arm64-v8a -Dcmake.dir=/opt/android-sdk-linux/cmake/3.30.3 :MapLibreAndroid:assembleOpenglRelease
 
