@@ -13,5 +13,5 @@ before_install:
 
 install:
   - export PATH="/opt/android-sdk-linux/cmake/3.30.3/bin:$PATH"
-  - cd platform/android && ./gradlew -Pmaplibre.abis=arm64-v8a -Dcmake.dir=/opt/android-sdk-linux/cmake/3.30.3 :MapLibreAndroid:assembleOpenglRelease :MapLibreAndroid:publishToMavenLocal
+  - cd platform/android && ./gradlew -Pmaplibre.abis=arm64-v8a -Dcmake.dir=/opt/android-sdk-linux/cmake/3.30.3 :MapLibreAndroid:publishToMavenLocal
 

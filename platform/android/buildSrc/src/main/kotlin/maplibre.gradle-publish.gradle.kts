@@ -14,7 +14,10 @@ plugins {
 afterEvaluate {
     mavenPublishing {
         publishToMavenCentral(true)
-        signAllPublications()
+        // Only sign if signing credentials are available (skip on JitPack)
+        if (project.hasProperty("signing.keyId") || System.getenv("GPG_PRIVATE_KEY") != null) {
+            signAllPublications()
+        }
     }
 }
 
