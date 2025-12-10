@@ -1,6 +1,9 @@
 jdk:
   - openjdk17
 
+before_install:
+  - git submodule update --init --recursive --depth 1
+
 install:
   - cd platform/android && ./gradlew -Pmaplibre.abis=arm64-v8a :MapLibreAndroid:assembleOpenglRelease
 
